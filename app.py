@@ -8,9 +8,11 @@ acquisition, and save the most recently captured spectrum to CSV.
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 from dataclasses import dataclass
+from threading import Lock
 from typing import Optional, Tuple
 
 from PySide6.QtCore import QObject, QThread, Signal
@@ -22,6 +24,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -126,6 +129,7 @@ class AcquisitionWorker(QThread):
         self._manager = manager
         self._interval = 1.0
         self._running = False
+        self._capture_lock = Lock()
 
     def start_acquisition(self, interval_seconds: float) -> None:
         self._interval = max(0.05, float(interval_seconds))
@@ -147,7 +151,8 @@ class AcquisitionWorker(QThread):
                 continue
 
             try:
-                spectrum = self._manager.capture()
+                with self._capture_lock:
+                    spectrum = self._manager.capture()
             except SpectrometerError as exc:
                 self.error_occurred.emit(str(exc))
                 self._running = False
@@ -165,6 +170,19 @@ class AcquisitionWorker(QThread):
         self._running = False
         self.requestInterruption()
 
+    def wait_for_idle(self, timeout: Optional[float] = None) -> bool:
+        """Block until no capture is in progress in the worker thread."""
+
+        if timeout is None:
+            self._capture_lock.acquire()
+            self._capture_lock.release()
+            return True
+
+        acquired = self._capture_lock.acquire(timeout=timeout)
+        if acquired:
+            self._capture_lock.release()
+        return acquired
+
 
 class SpectrumCanvas(FigureCanvasQTAgg):
     """Matplotlib canvas specialised for spectrum visualisation."""
@@ -176,6 +194,7 @@ class SpectrumCanvas(FigureCanvasQTAgg):
         self._axes.set_xlabel("Длина волны, нм")
         self._axes.set_ylabel("Интенсивность (логарифмическая шкала)")
         self._axes.set_yscale("log")
+        self._axes.set_ylim(bottom=1.0)
         self._axes.grid(True)
         self._line = None
 
@@ -190,6 +209,9 @@ class SpectrumCanvas(FigureCanvasQTAgg):
 
         self._axes.relim()
         self._axes.autoscale_view()
+        current_bottom, current_top = self._axes.get_ylim()
+        if current_bottom < 1.0:
+            self._axes.set_ylim(bottom=1.0, top=current_top)
         self.draw_idle()
 
     @staticmethod
@@ -247,6 +269,16 @@ class MainWindow(QMainWindow):
         self._interval_spin.setRange(1, 3600)
         self._interval_spin.setValue(1)
 
+        series_count_label = QLabel("Количество измерений:")
+        self._series_count_spin = QSpinBox()
+        self._series_count_spin.setRange(1, 10_000)
+        self._series_count_spin.setValue(10)
+
+        series_path_label = QLabel("Папка для серии:")
+        self._series_path_edit = QLineEdit(os.getcwd())
+        self._series_path_button = QPushButton("Выбрать...")
+        self._series_path_button.clicked.connect(self._choose_series_directory)
+
         self._background_button = QPushButton("Измерить фон")
         self._background_button.clicked.connect(self._capture_background)
 
@@ -259,19 +291,28 @@ class MainWindow(QMainWindow):
         self._save_button = QPushButton("Сохранить в .CSV")
         self._save_button.clicked.connect(self._save_csv)
 
+        self._series_button = QPushButton("Измерить серию")
+        self._series_button.clicked.connect(self._capture_series)
+
         self._status_label = QLabel("Статус: ожидается подключение")
 
         layout.addWidget(integration_label, 0, 0)
         layout.addWidget(self._integration_spin, 0, 1)
         layout.addWidget(interval_label, 1, 0)
         layout.addWidget(self._interval_spin, 1, 1)
-        layout.addWidget(self._background_button, 2, 0, 1, 2)
-        layout.addWidget(self._start_button, 3, 0, 1, 2)
-        layout.addWidget(self._snapshot_button, 4, 0, 1, 2)
-        layout.addWidget(self._save_button, 5, 0, 1, 2)
-        layout.addWidget(self._status_label, 6, 0, 1, 2)
+        layout.addWidget(series_count_label, 2, 0)
+        layout.addWidget(self._series_count_spin, 2, 1)
+        layout.addWidget(series_path_label, 3, 0)
+        layout.addWidget(self._series_path_edit, 3, 1)
+        layout.addWidget(self._series_path_button, 4, 0, 1, 2)
+        layout.addWidget(self._background_button, 5, 0, 1, 2)
+        layout.addWidget(self._start_button, 6, 0, 1, 2)
+        layout.addWidget(self._snapshot_button, 7, 0, 1, 2)
+        layout.addWidget(self._save_button, 8, 0, 1, 2)
+        layout.addWidget(self._series_button, 9, 0, 1, 2)
+        layout.addWidget(self._status_label, 10, 0, 1, 2)
 
-        layout.setRowStretch(7, 1)
+        layout.setRowStretch(11, 1)
 
         return box
 
@@ -308,6 +349,10 @@ class MainWindow(QMainWindow):
         self._background_button.setEnabled(enabled)
         self._integration_spin.setEnabled(enabled)
         self._interval_spin.setEnabled(enabled)
+        self._series_count_spin.setEnabled(enabled)
+        self._series_path_edit.setEnabled(enabled)
+        self._series_path_button.setEnabled(enabled)
+        self._series_button.setEnabled(enabled)
 
     def _on_integration_changed(self, value: int) -> None:
         if not self._manager.is_connected:
@@ -348,6 +393,13 @@ class MainWindow(QMainWindow):
         if was_running:
             self._worker.stop_acquisition()
             self._start_button.setText("Начать съёмку")
+            if not self._worker.wait_for_idle(timeout=5.0):
+                QMessageBox.warning(
+                    self,
+                    "Ошибка",
+                    "Не удалось дождаться завершения текущей съёмки.",
+                )
+                return
 
         try:
             spectrum = self._manager.capture()
@@ -391,6 +443,90 @@ class MainWindow(QMainWindow):
             return
 
         self._status_label.setText(f"Статус: спектр сохранён в {filename}")
+
+    def _choose_series_directory(self) -> None:
+        directory = QFileDialog.getExistingDirectory(
+            self,
+            "Выбрать папку для серии",
+            self._series_path_edit.text() or os.getcwd(),
+        )
+        if directory:
+            self._series_path_edit.setText(directory)
+
+    def _capture_series(self) -> None:
+        count = self._series_count_spin.value()
+        target_dir = self._series_path_edit.text().strip() or os.getcwd()
+
+        was_running = self._worker.is_acquiring
+        if was_running:
+            self._worker.stop_acquisition()
+            self._start_button.setText("Начать съёмку")
+            if not self._worker.wait_for_idle(timeout=5.0):
+                QMessageBox.warning(
+                    self,
+                    "Ошибка",
+                    "Не удалось дождаться завершения текущей съёмки.",
+                )
+                return
+
+        try:
+            os.makedirs(target_dir, exist_ok=True)
+        except OSError as exc:
+            QMessageBox.warning(
+                self,
+                "Ошибка",
+                f"Не удалось создать папку для сохранения: {exc}",
+            )
+            return
+
+        interval_seconds = self._interval_spin.value()
+
+        self._series_button.setEnabled(False)
+        self._status_label.setText("Статус: выполняется серия измерений")
+        QApplication.processEvents()
+
+        for index in range(count):
+            try:
+                if not self._worker.wait_for_idle(timeout=5.0):
+                    raise SpectrometerError(
+                        "Рабочий поток занят. Серия остановлена."
+                    )
+                spectrum = self._manager.capture()
+            except SpectrometerError as exc:
+                QMessageBox.warning(self, "Ошибка", str(exc))
+                self._series_button.setEnabled(True)
+                self._status_label.setText("Статус: серия измерений прервана")
+                return
+
+            processed = self._subtract_background(spectrum)
+            filename = os.path.join(target_dir, f"sample{index}.csv")
+            try:
+                with open(filename, "w", encoding="utf-8") as f:
+                    for wl, cur in zip(processed.wavelengths, processed.intensities):
+                        f.write(f"{wl:.6f},{abs(cur)}\n")
+            except OSError as exc:
+                QMessageBox.warning(
+                    self,
+                    "Ошибка",
+                    f"Не удалось сохранить файл {filename}: {exc}",
+                )
+                self._series_button.setEnabled(True)
+                self._status_label.setText("Статус: серия измерений прервана")
+                return
+
+            if index < count - 1:
+                time.sleep(interval_seconds)
+
+        self._series_button.setEnabled(True)
+        if was_running:
+            self._status_label.setText(
+                f"Статус: серия из {count} измерений сохранена в {target_dir}. "
+                "Перезапустите съёмку при необходимости."
+            )
+        else:
+            self._status_label.setText(
+                f"Статус: серия из {count} измерений сохранена в {target_dir}"
+            )
 
     def _on_spectrum_ready(self, spectrum: Spectrum) -> None:
         processed = self._subtract_background(spectrum)
