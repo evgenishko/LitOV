@@ -194,7 +194,7 @@ class SpectrumCanvas(FigureCanvasQTAgg):
         self._axes.set_xlabel("Длина волны, нм")
         self._axes.set_ylabel("Интенсивность (логарифмическая шкала)")
         self._axes.set_yscale("log")
-        self._axes.set_ylim(bottom=1.0)
+        self._axes.set_ylim(bottom=1.0, top=100_000.0)
         self._axes.grid(True)
         self._line = None
 
@@ -210,8 +210,11 @@ class SpectrumCanvas(FigureCanvasQTAgg):
         self._axes.relim()
         self._axes.autoscale_view()
         current_bottom, current_top = self._axes.get_ylim()
-        if current_bottom < 1.0:
-            self._axes.set_ylim(bottom=1.0, top=current_top)
+        if current_bottom < 1.0 or current_top > 100_000.0:
+            self._axes.set_ylim(
+                bottom=max(1.0, current_bottom),
+                top=min(100_000.0, max(current_top, 1.0)),
+            )
         self.draw_idle()
 
     @staticmethod
@@ -222,7 +225,8 @@ class SpectrumCanvas(FigureCanvasQTAgg):
         # Это гарантирует корректную работу логарифмической шкалы и предотвращает
         # отображение нулей и отрицательных значений.
         floor = 1.0
-        return tuple(max(floor, value) for value in intensities)
+        ceiling = 100_000.0
+        return tuple(min(ceiling, max(floor, value)) for value in intensities)
 
 
 class MainWindow(QMainWindow):
