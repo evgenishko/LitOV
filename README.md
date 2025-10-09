@@ -1,13 +1,13 @@
 # LitOV
 
-Простое приложение на PyQt6 для работы со спектрометром Ocean Optics FLAME-S-UV-VIS.
+Простое приложение на PySide6 для работы со спектрометром Ocean Optics FLAME-S-UV-VIS.
 
 ## Запуск
 
 1. Установите зависимости:
 
    ```bash
-   pip install pyqt6 matplotlib seabreeze
+   pip install pyside6 matplotlib seabreeze
    ```
 
 2. Подключите спектрометр и убедитесь, что драйверы установлены корректно.

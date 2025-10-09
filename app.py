@@ -1,6 +1,6 @@
 """GUI application for controlling an Ocean Optics FLAME-S-UV-VIS spectrometer.
 
-The application is written with PyQt6 and seabreeze.  It provides a left panel
+The application is written with PySide6 and seabreeze.  It provides a left panel
 with acquisition controls and a right panel that visualises the measured
 spectrum.  Users can perform one-off captures, start or stop continuous
 acquisition, and save the most recently captured spectrum to CSV.
@@ -13,9 +13,9 @@ import time
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
-from PyQt6.QtCore import QObject, QThread, pyqtSignal
-from PyQt6.QtGui import QAction
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import QObject, QThread, Signal
+from PySide6.QtGui import QAction
+from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
     QGridLayout,
@@ -98,8 +98,8 @@ class SpectrometerManager(QObject):
 class AcquisitionWorker(QThread):
     """Performs repeated acquisitions in the background."""
 
-    spectrum_ready = pyqtSignal(object)
-    error_occurred = pyqtSignal(str)
+    spectrum_ready = Signal(object)
+    error_occurred = Signal(str)
 
     def __init__(self, manager: SpectrometerManager) -> None:
         super().__init__()
