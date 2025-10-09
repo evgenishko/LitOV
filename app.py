@@ -221,6 +221,7 @@ class MainWindow(QMainWindow):
         self._worker.error_occurred.connect(self._on_worker_error)
 
         self._current_spectrum: Optional[Spectrum] = None
+        self._background_spectrum: Optional[Spectrum] = None
 
         self._central_widget = QWidget()
         self.setCentralWidget(self._central_widget)
@@ -252,6 +253,9 @@ class MainWindow(QMainWindow):
         self._interval_spin.setRange(1, 3600)
         self._interval_spin.setValue(1)
 
+        self._background_button = QPushButton("Измерить фон")
+        self._background_button.clicked.connect(self._capture_background)
+
         self._start_button = QPushButton("Начать съёмку")
         self._start_button.clicked.connect(self._toggle_acquisition)
 
@@ -267,12 +271,13 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._integration_spin, 0, 1)
         layout.addWidget(interval_label, 1, 0)
         layout.addWidget(self._interval_spin, 1, 1)
-        layout.addWidget(self._start_button, 2, 0, 1, 2)
-        layout.addWidget(self._snapshot_button, 3, 0, 1, 2)
-        layout.addWidget(self._save_button, 4, 0, 1, 2)
-        layout.addWidget(self._status_label, 5, 0, 1, 2)
+        layout.addWidget(self._background_button, 2, 0, 1, 2)
+        layout.addWidget(self._start_button, 3, 0, 1, 2)
+        layout.addWidget(self._snapshot_button, 4, 0, 1, 2)
+        layout.addWidget(self._save_button, 5, 0, 1, 2)
+        layout.addWidget(self._status_label, 6, 0, 1, 2)
 
-        layout.setRowStretch(6, 1)
+        layout.setRowStretch(7, 1)
 
         return box
 
@@ -300,11 +305,13 @@ class MainWindow(QMainWindow):
         self._status_label.setText("Статус: спектрометр подключён")
         self._set_controls_enabled(True)
         self._apply_integration_time()
+        self._background_spectrum = None
 
     def _set_controls_enabled(self, enabled: bool) -> None:
         self._start_button.setEnabled(enabled)
         self._snapshot_button.setEnabled(enabled)
         self._save_button.setEnabled(enabled)
+        self._background_button.setEnabled(enabled)
         self._integration_spin.setEnabled(enabled)
         self._interval_spin.setEnabled(enabled)
 
@@ -342,6 +349,26 @@ class MainWindow(QMainWindow):
         self._on_spectrum_ready(spectrum)
         self._status_label.setText("Статус: получен одиночный снимок")
 
+    def _capture_background(self) -> None:
+        was_running = self._worker.is_acquiring
+        if was_running:
+            self._worker.stop_acquisition()
+            self._start_button.setText("Начать съёмку")
+
+        try:
+            spectrum = self._manager.capture()
+        except SpectrometerError as exc:
+            QMessageBox.warning(self, "Ошибка", str(exc))
+            return
+
+        self._background_spectrum = spectrum
+        self._status_label.setText("Статус: фон измерен и будет вычитаться")
+
+        if was_running:
+            self._status_label.setText(
+                "Статус: фон измерен; перезапустите съёмку для обновления данных"
+            )
+
     def _save_csv(self) -> None:
         if self._current_spectrum is None:
             QMessageBox.information(self, "Нет данных", "Сначала выполните съёмку.")
@@ -372,8 +399,39 @@ class MainWindow(QMainWindow):
         self._status_label.setText(f"Статус: спектр сохранён в {filename}")
 
     def _on_spectrum_ready(self, spectrum: Spectrum) -> None:
-        self._current_spectrum = spectrum
-        self._canvas.update_spectrum(spectrum)
+        processed = self._subtract_background(spectrum)
+        self._current_spectrum = processed
+        self._canvas.update_spectrum(processed)
+
+    def _subtract_background(self, spectrum: Spectrum) -> Spectrum:
+        if self._background_spectrum is None:
+            return spectrum
+
+        background = self._background_spectrum
+
+        if len(spectrum.wavelengths) != len(background.wavelengths):
+            QMessageBox.warning(
+                self,
+                "Предупреждение",
+                "Размер измеренного спектра не совпадает с фоном. Фон будет сброшен.",
+            )
+            self._background_spectrum = None
+            return spectrum
+
+        if spectrum.wavelengths != background.wavelengths:
+            QMessageBox.warning(
+                self,
+                "Предупреждение",
+                "Длины волн фона отличаются. Фон будет сброшен.",
+            )
+            self._background_spectrum = None
+            return spectrum
+
+        corrected_intensities = tuple(
+            cur - bg for cur, bg in zip(spectrum.intensities, background.intensities)
+        )
+
+        return Spectrum(spectrum.wavelengths, corrected_intensities)
 
     def _on_worker_error(self, message: str) -> None:
         QMessageBox.warning(self, "Ошибка", message)
