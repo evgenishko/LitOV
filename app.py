@@ -35,9 +35,16 @@ from matplotlib.figure import Figure
 
 
 try:  # pragma: no cover - hardware interaction is not easily tested
-    from seabreeze.spectrometers import Spectrometer
+    from seabreeze.spectrometers import Spectrometer, list_devices
 except Exception:  # noqa: BLE001 - we want to catch everything import related
-    Spectrometer = None  # type: ignore[assignment]
+    try:  # pragma: no cover - attempt to fall back to the pure python backend
+        from seabreeze import seabreeze
+
+        seabreeze.use("pyseabreeze")
+        from seabreeze.spectrometers import Spectrometer, list_devices
+    except Exception:
+        Spectrometer = None  # type: ignore[assignment]
+        list_devices = lambda: ()  # type: ignore[assignment]
 
 
 class SpectrometerError(RuntimeError):
@@ -68,10 +75,23 @@ class SpectrometerManager(QObject):
             )
 
         try:
+            devices = list(list_devices())
+        except Exception as exc:  # pragma: no cover - hardware specific
+            raise SpectrometerError(
+                "Не удалось определить список устройств. Проверьте установку seabreeze."
+            ) from exc
+
+        if not devices:
+            raise SpectrometerError(
+                "Спектрометр не найден. Убедитесь, что устройство подключено и выполнена "
+                "команда 'python -m seabreeze.os_setup'."
+            )
+
+        try:
             self._spectrometer = Spectrometer.from_first_available()
         except Exception as exc:  # pragma: no cover - hardware specific
             raise SpectrometerError(
-                "Не удалось подключиться к спектрометру."
+                "Не удалось подключиться к спектрометру. Проверьте права доступа и драйверы."
             ) from exc
 
     def disconnect(self) -> None:
@@ -154,21 +174,39 @@ class SpectrumCanvas(FigureCanvasQTAgg):
         super().__init__(self._figure)
         self._axes = self._figure.add_subplot(111)
         self._axes.set_xlabel("Длина волны, нм")
-        self._axes.set_ylabel("Интенсивность")
+        self._axes.set_ylabel("Интенсивность (логарифмическая шкала)")
+        self._axes.set_yscale("log")
         self._axes.grid(True)
         self._line = None
 
     def update_spectrum(self, spectrum: Spectrum) -> None:
+        intensities = self._sanitize_intensities(spectrum.intensities)
         if self._line is None:
             (self._line,) = self._axes.plot(
-                spectrum.wavelengths, spectrum.intensities, color="tab:blue"
+                spectrum.wavelengths, intensities, color="tab:blue"
             )
         else:
-            self._line.set_data(spectrum.wavelengths, spectrum.intensities)
+            self._line.set_data(spectrum.wavelengths, intensities)
 
         self._axes.relim()
         self._axes.autoscale_view()
         self.draw_idle()
+
+    @staticmethod
+    def _sanitize_intensities(intensities: Tuple[float, ...]) -> Tuple[float, ...]:
+        """Ensure intensities are positive for logarithmic plotting."""
+
+        # Matplotlib cannot display non-positive values on a log scale.  Clamp such values
+        # to a small positive floor so that the plot remains meaningful while preserving the
+        # order of magnitude for positive intensities.
+        floor = 1e-6
+        adjusted = []
+        for value in intensities:
+            if value > floor:
+                adjusted.append(value)
+            else:
+                adjusted.append(floor)
+        return tuple(adjusted)
 
 
 class MainWindow(QMainWindow):
