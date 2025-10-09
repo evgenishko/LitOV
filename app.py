@@ -194,6 +194,7 @@ class SpectrumCanvas(FigureCanvasQTAgg):
         self._axes.set_xlabel("Длина волны, нм")
         self._axes.set_ylabel("Интенсивность (логарифмическая шкала)")
         self._axes.set_yscale("log")
+        self._axes.set_ylim(bottom=1.0)
         self._axes.grid(True)
         self._line = None
 
@@ -208,6 +209,9 @@ class SpectrumCanvas(FigureCanvasQTAgg):
 
         self._axes.relim()
         self._axes.autoscale_view()
+        current_bottom, current_top = self._axes.get_ylim()
+        if current_bottom < 1.0:
+            self._axes.set_ylim(bottom=1.0, top=current_top)
         self.draw_idle()
 
     @staticmethod
