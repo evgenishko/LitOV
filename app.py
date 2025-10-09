@@ -194,19 +194,13 @@ class SpectrumCanvas(FigureCanvasQTAgg):
 
     @staticmethod
     def _sanitize_intensities(intensities: Tuple[float, ...]) -> Tuple[float, ...]:
-        """Ensure intensities are positive for logarithmic plotting."""
+        """Clamp intensities to be compatible with the log-scaled Y axis."""
 
-        # Matplotlib cannot display non-positive values on a log scale.  Clamp such values
-        # to a small positive floor so that the plot remains meaningful while preserving the
-        # order of magnitude for positive intensities.
-        floor = 1e-6
-        adjusted = []
-        for value in intensities:
-            if value > floor:
-                adjusted.append(value)
-            else:
-                adjusted.append(floor)
-        return tuple(adjusted)
+        # Требование интерфейса: отображать максимум между 1 и измеренной интенсивностью.
+        # Это гарантирует корректную работу логарифмической шкалы и предотвращает
+        # отображение нулей и отрицательных значений.
+        floor = 1.0
+        return tuple(max(floor, value) for value in intensities)
 
 
 class MainWindow(QMainWindow):
